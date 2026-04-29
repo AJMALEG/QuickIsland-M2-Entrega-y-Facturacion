@@ -1,1 +1,67 @@
 
+<?php
+// Php/eliminar_producto.php
+header('Content-Type: application/json');
+include('db_config.php');
+
+// Capturamos datos por GET
+$id_producto = isset($_GET['id']) ? intval($_GET['id']) : 0;
+$forzar = isset($_GET['forzar']) ? intval($_GET['forzar']) : 0;
+
+if ($id_producto === 0) {
+    echo json_encode(["success" => false, "error" => "ID de producto inválido"]);
+    exit;
+}
+
+// Iniciamos transacción
+pg_query($dbconn, "BEGIN");
+
+try {
+    // Si el usuario confirmó el borrado con stock, activamos la variable de sesión en Postgres
+    if ($forzar === 1) {
+        pg_query($dbconn, "SET app.forzar_borrado = 'on'");
+    }
+
+    // Intentamos borrar de la tabla inventario general
+    // (El trigger trg_eliminar_producto_inventario borrará automáticamente de la isla específica)
+    $res_inventario = pg_query_params($dbconn, "DELETE FROM inventario WHERE id_producto = $1", array($id_producto));
+
+    if (!$res_inventario) {
+        $error_db = pg_last_error($dbconn);
+        throw new Exception($error_db);
+    }
+
+    // Si pasó el inventario, borramos de la tabla maestra de productos
+    $res_producto = pg_query_params($dbconn, "DELETE FROM producto WHERE id_producto = $1", array($id_producto));
+
+    if ($res_producto) {
+        pg_query($dbconn, "COMMIT");
+        echo json_encode(["success" => true]);
+    } else {
+        throw new Exception("Error al eliminar del catálogo maestro.");
+    }
+
+} catch (Exception $e) {
+    pg_query($dbconn, "ROLLBACK");
+    $mensaje = $e->getMessage();
+
+    // Capturamos el error personalizado del Trigger: "BLOQUEO_STOCK: X"
+    if (strpos($mensaje, 'BLOQUEO_STOCK') !== false) {
+        preg_match('/BLOQUEO_STOCK: (\d+)/', $mensaje, $matches);
+        $stock = isset($matches[1]) ? $matches[1] : "varias";
+        
+        echo json_encode([
+            "success" => false, 
+            "error" => "BLOQUEO_STOCK", 
+            "stock" => $stock
+        ]);
+    } else {
+        echo json_encode([
+            "success" => false, 
+            "error" => "Error de base de datos: " . $mensaje
+        ]);
+    }
+}
+
+pg_close($dbconn);
+?>
